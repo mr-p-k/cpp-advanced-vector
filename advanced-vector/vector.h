@@ -293,7 +293,7 @@ public:
 
     template <typename... Args>
     iterator Emplace(const_iterator pos, Args&&... args) {
-        assert(static_cast<size_t>(pos - cbegin()) <= size_);
+        assert(cbegin() <= pos && pos <= cend());
 
         size_t index = pos - cbegin();
 
