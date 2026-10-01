@@ -107,6 +107,16 @@ private:
         new (buf) T(elem);
     }
 
+    template <typename... Args>
+    void MoveOrCopyRawMemory(Args... args) {
+        if constexpr (std::is_nothrow_move_constructible_v<T> ||
+                      !std::is_copy_constructible_v<T>) {
+            std::uninitialized_move_n(std::forward<Args>(args)...);
+        } else {
+            std::uninitialized_copy_n(std::forward<Args>(args)...);
+        }
+    }
+
 public:
     using iterator = T*;
 
@@ -270,37 +280,7 @@ public:
 
     template <typename... Args>
     T& EmplaceBack(Args&&... args) {
-        if (size_ == Capacity()) {
-            const size_t kNewSize = (size_ == 0 ? 1 : size_ * 2U);
-
-            RawMemory<T> tmp(kNewSize);
-
-            new (tmp.GetAddress() + size_) T(std::forward<Args>(args)...);
-
-            try {
-                if constexpr (std::is_nothrow_move_constructible_v<T> ||
-                              !std::is_copy_constructible_v<T>) {
-                    std::uninitialized_move_n(data_.GetAddress(), size_,
-                                              tmp.GetAddress());
-                } else {
-                    std::uninitialized_copy_n(data_.GetAddress(), size_,
-                                              tmp.GetAddress());
-                }
-            } catch (...) {
-                (tmp.GetAddress() + size_)->~T();
-
-                throw;
-            }
-
-            std::destroy_n(data_.GetAddress(), size_);
-            data_.Swap(tmp);
-        } else {
-            new (data_.GetAddress() + size_) T(std::forward<Args>(args)...);
-        }
-
-        ++size_;
-
-        return data_[size_ - 1];
+        return *Emplace(cend(), std::forward<Args>(args)...);
     }
 
     iterator Insert(const_iterator pos, const T& value) {
@@ -313,6 +293,8 @@ public:
 
     template <typename... Args>
     iterator Emplace(const_iterator pos, Args&&... args) {
+        assert(static_cast<size_t>(pos - cbegin()) <= size_);
+
         size_t index = pos - cbegin();
 
         if (size_ < Capacity()) {
@@ -321,12 +303,7 @@ public:
             } else {
                 T tmp_obj(std::forward<Args>(args)...);
 
-                if constexpr (std::is_nothrow_move_constructible_v<T> ||
-                              !std::is_copy_constructible_v<T>) {
-                    std::uninitialized_move_n(end() - 1, 1U, end());
-                } else {
-                    std::uninitialized_copy_n(end() - 1, 1U, end());
-                }
+                MoveOrCopyRawMemory(end() - 1, 1U, end());
 
                 std::ranges::move_backward(begin() + index, end() - 1, end());
 
@@ -339,42 +316,19 @@ public:
 
             new (tmp_mem.GetAddress() + index) T(std::forward<Args>(args)...);
 
-            bool is_first_part_done = false;
             try {
-                if constexpr (std::is_nothrow_move_constructible_v<T> ||
-                              !std::is_copy_constructible_v<T>) {
-                    std::uninitialized_move_n(begin() + index, size_ - index,
-                                              tmp_mem.GetAddress() + index + 1);
-
-                    is_first_part_done = true;
-
-                    std::uninitialized_move_n(begin(), index,
-                                              tmp_mem.GetAddress());
-
-                } else {
-                    std::uninitialized_copy_n(begin(), index,
-                                              tmp_mem.GetAddress());
-
-                    is_first_part_done = true;
-
-                    std::uninitialized_copy_n(begin() + index, size_ - index,
-                                              tmp_mem.GetAddress() + index + 1);
-                }
+                MoveOrCopyRawMemory(begin() + index, size_ - index,
+                                    tmp_mem.GetAddress() + index + 1);
             } catch (...) {
                 (tmp_mem.GetAddress() + index)->~T();
 
-                if constexpr (std::is_nothrow_move_constructible_v<T> ||
-                              !std::is_copy_constructible_v<T>) {
-                    //
-                    if (is_first_part_done) {
-                        std::destroy_n(tmp_mem.GetAddress() + index + 1,
-                                       size_ - index);
-                    }
-                } else {
-                    if (is_first_part_done) {
-                        std::destroy_n(tmp_mem.GetAddress(), index);
-                    }
-                }
+                throw;
+            }
+
+            try {
+                MoveOrCopyRawMemory(begin(), index, tmp_mem.GetAddress());
+            } catch (...) {
+                std::destroy_n(tmp_mem.GetAddress() + index, size_ - index + 1);
 
                 throw;
             }
